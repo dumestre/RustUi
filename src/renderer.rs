@@ -366,3 +366,118 @@ pub fn draw_rect(f: &mut [u8], x: i32, y: i32, w: i32, h: i32, c: Color, sw: u32
         }
     }
 }
+
+// ============================================================================
+// DEBUG OVERLAY
+// ============================================================================
+
+/// Desenha overlay de debug com FPS e informações de renderização
+pub fn draw_debug_overlay(
+    frame: &mut [u8],
+    atlas: &mut FontAtlas,
+    font: &FontArc,
+    fps: f64,
+    frame_time_ms: f64,
+    sw: u32,
+    sh: u32,
+) {
+    let bg = Color { r: 0, g: 0, b: 0, a: 200 };
+    
+    // Background do overlay
+    draw_rect(
+        frame,
+        0,
+        0,
+        180,
+        80,
+        bg,
+        sw,
+        sh,
+    );
+
+    // FPS
+    let fps_text = format!("FPS: {:.0}", fps);
+    draw_text_smooth(
+        frame,
+        atlas,
+        font,
+        14.0,
+        8.0,
+        10.0,
+        &fps_text,
+        Color::WHITE,
+        sw,
+        sh,
+    );
+
+    // Frame time
+    let ft_text = format!("Frame: {:.2}ms", frame_time_ms);
+    draw_text_smooth(
+        frame,
+        atlas,
+        font,
+        14.0,
+        8.0,
+        30.0,
+        &ft_text,
+        Color::WHITE,
+        sw,
+        sh,
+    );
+
+    // Resolução
+    let res_text = format!("Res: {}x{}", sw, sh);
+    draw_text_smooth(
+        frame,
+        atlas,
+        font,
+        14.0,
+        8.0,
+        50.0,
+        &res_text,
+        Color::WHITE,
+        sw,
+        sh,
+    );
+
+    // Indicador de cor baseado no FPS
+    let indicator_color = if fps >= 55.0 {
+        Color::GREEN
+    } else if fps >= 30.0 {
+        Color { r: 255, g: 200, b: 0, a: 255 }
+    } else {
+        Color::RED
+    };
+
+    draw_rect(
+        frame,
+        160,
+        10,
+        12,
+        12,
+        indicator_color,
+        sw,
+        sh,
+    );
+}
+
+/// Desenha bounds de debug para um rect
+pub fn draw_debug_bounds(
+    frame: &mut [u8],
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    color: Color,
+    sw: u32,
+    sh: u32,
+) {
+    // Top
+    draw_rect(frame, x as i32, y as i32, w as i32, 1, color, sw, sh);
+    // Bottom
+    draw_rect(frame, x as i32, (y + h) as i32 - 1, w as i32, 1, color, sw, sh);
+    // Left
+    draw_rect(frame, x as i32, y as i32, 1, h as i32, color, sw, sh);
+    // Right
+    draw_rect(frame, (x + w) as i32 - 1, y as i32, 1, h as i32, color, sw, sh);
+}

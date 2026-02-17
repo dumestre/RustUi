@@ -1,19 +1,159 @@
+use crate::config::{components, Theme};
 use crate::core::{InputState, StateStore};
 use crate::layout::Rect;
 use crate::renderer::FontAtlas;
 use ab_glyph::FontArc;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Instant;
+
+// ============================================================================
+// ANIMATION SYSTEM
+// ============================================================================
+
+#[derive(Clone)]
+pub struct AnimationState {
+    pub start_value: f32,
+    pub target_value: f32,
+    pub start_time: Instant,
+    pub duration_ms: f64,
+}
+
+impl AnimationState {
+    pub fn new(start: f32, target: f32, duration_ms: f64) -> Self {
+        Self {
+            start_value: start,
+            target_value: target,
+            start_time: Instant::now(),
+            duration_ms,
+        }
+    }
+
+    pub fn value(&self) -> f32 {
+        let elapsed = self.start_time.elapsed().as_secs_f64() * 1000.0;
+        if elapsed >= self.duration_ms {
+            return self.target_value;
+        }
+        let t = (elapsed / self.duration_ms) as f32;
+        // Ease-out cubic
+        let eased = 1.0 - (1.0 - t).powi(3);
+        self.start_value + (self.target_value - self.start_value) * eased
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.start_time.elapsed().as_secs_f64() * 1000.0 >= self.duration_ms
+    }
+}
+
+// ============================================================================
+// SCROLL STATE
+// ============================================================================
+
+#[derive(Clone, Default)]
+pub struct ScrollState {
+    pub offset: f32,
+    pub content_height: f32,
+    pub viewport_height: f32,
+    pub is_hovered: bool,
+    pub is_dragging: bool,
+    pub drag_start_y: f32,
+    pub drag_start_offset: f32,
+}
+
+impl ScrollState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn scroll(&mut self, delta: f32) {
+        let max_scroll = (self.content_height - self.viewport_height).max(0.0);
+        self.offset = (self.offset - delta).clamp(0.0, max_scroll);
+    }
+
+    pub fn scroll_to(&mut self, y: f32) {
+        let max_scroll = (self.content_height - self.viewport_height).max(0.0);
+        self.offset = y.clamp(0.0, max_scroll);
+    }
+
+    pub fn can_scroll(&self) -> bool {
+        self.content_height > self.viewport_height
+    }
+
+    pub fn scrollbar_rect(&self, x: f32, y: f32) -> Option<Rect> {
+        if !self.can_scroll() {
+            return None;
+        }
+        let ratio = self.viewport_height / self.content_height;
+        let thumb_height = (ratio * self.viewport_height).max(components::SCROLLBAR_MIN_HEIGHT);
+        let max_offset = self.viewport_height - thumb_height;
+        let thumb_y = if self.content_height > self.viewport_height {
+            y + (self.offset / (self.content_height - self.viewport_height)) * max_offset
+        } else {
+            y
+        };
+        Some(Rect {
+            x,
+            y: thumb_y,
+            w: components::SCROLLBAR_WIDTH,
+            h: thumb_height,
+        })
+    }
+}
+
+// ============================================================================
+// ANIMATED VALUE HELPER
+// ============================================================================
+
+#[derive(Clone)]
+pub struct AnimatedValue {
+    state: Option<AnimationState>,
+    current: f32,
+}
+
+impl AnimatedValue {
+    pub fn new(initial: f32) -> Self {
+        Self {
+            state: None,
+            current: initial,
+        }
+    }
+
+    pub fn set(&mut self, target: f32, duration_ms: f64) {
+        self.state = Some(AnimationState::new(self.current, target, duration_ms));
+    }
+
+    pub fn update(&mut self) -> f32 {
+        if let Some(anim) = &self.state {
+            self.current = anim.value();
+            if anim.is_complete() {
+                self.state = None;
+            }
+        }
+        self.current
+    }
+
+    pub fn is_animating(&self) -> bool {
+        self.state.is_some()
+    }
+}
+
+// ============================================================================
+// UI CONTEXT
+// ============================================================================
 
 pub struct Ui<'a> {
     pub frame: &'a mut [u8],
     pub width: u32,
     pub height: u32,
     pub cursor: Rect,
+    pub clip_rect: Option<Rect>,
     pub font: &'a FontArc,
     pub atlas: &'a mut FontAtlas,
     pub state: Rc<RefCell<StateStore>>,
     pub input: &'a InputState,
+    pub scroll: ScrollState,
+    pub depth: u32,
+    pub widget_id_counter: u64,
 }
 
 pub struct StateHandle<T> {
@@ -68,7 +208,38 @@ impl<'a> Ui<'a> {
                 w: width as f32,
                 h: height as f32,
             },
+            clip_rect: None,
+            scroll: ScrollState::new(),
+            depth: 0,
+            widget_id_counter: 0,
         }
+    }
+
+    /// Acessa o tema atual
+    pub fn theme(&self) -> std::cell::Ref<'_, Theme> {
+        std::cell::Ref::map(self.state.borrow(), |s| &s.theme)
+    }
+
+    /// Gera um ID único para o widget atual
+    pub fn next_widget_id(&mut self) -> u64 {
+        let id = self.widget_id_counter;
+        self.widget_id_counter += 1;
+        id
+    }
+
+    /// Push de contexto para ID hierárquico
+    pub fn push_id(&mut self, id: u64) {
+        self.state.borrow_mut().push_widget(id);
+    }
+
+    /// Pop de contexto de ID
+    pub fn pop_id(&mut self) {
+        self.state.borrow_mut().pop_widget();
+    }
+
+    /// ID completo baseado no path hierárquico
+    pub fn make_id(&self, local: u64) -> u64 {
+        self.state.borrow().widget_stack.make_id(local)
     }
 
     pub fn use_state<T: 'static + Clone>(&mut self, init: impl FnOnce() -> T) -> StateHandle<T> {
@@ -89,8 +260,92 @@ impl<'a> Ui<'a> {
         }
     }
 
+    pub fn use_state_with_id<T: 'static + Clone>(
+        &mut self,
+        widget_id: u64,
+        init: impl FnOnce() -> T,
+    ) -> StateHandle<T> {
+        let id = self.make_id(widget_id);
+        let exists = {
+            let store = self.state.borrow();
+            store.states.contains_key(&id)
+        };
+
+        if !exists {
+            let mut store = self.state.borrow_mut();
+            store.states.insert(id, Box::new(init()));
+        }
+
+        StateHandle {
+            id,
+            store: self.state.clone(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
     pub fn is_hovered(&self, rect: Rect) -> bool {
         let (mx, my) = self.input.mouse_pos;
+        // Respeita clip rect se existir
+        if let Some(clip) = &self.clip_rect {
+            if mx < clip.x || mx > clip.x + clip.w || my < clip.y || my > clip.y + clip.h {
+                return false;
+            }
+        }
+        // Considera scroll offset
+        let adjusted_y = rect.y - self.scroll.offset;
+        mx >= rect.x && mx <= rect.x + rect.w && my >= adjusted_y && my <= adjusted_y + rect.h
+    }
+
+    pub fn is_hovered_absolute(&self, rect: Rect) -> bool {
+        let (mx, my) = self.input.mouse_pos;
         mx >= rect.x && mx <= rect.x + rect.w && my >= rect.y && my <= rect.y + rect.h
+    }
+
+    pub fn handle_scroll(&mut self) {
+        if self.scroll.is_hovered && self.input.scroll_delta != 0.0 {
+            self.scroll.scroll(self.input.scroll_delta);
+        }
+    }
+
+    pub fn draw_scrollbar(&mut self, x: f32, y: f32) {
+        if !self.scroll.can_scroll() {
+            return;
+        }
+
+        if let Some(thumb_rect) = self.scroll.scrollbar_rect(x, y) {
+            let is_hovered = self.is_hovered_absolute(thumb_rect);
+            let theme = self.theme();
+            let color = if is_hovered || self.scroll.is_dragging {
+                theme.colors.text_secondary
+            } else {
+                theme.colors.text_muted
+            };
+            drop(theme);
+
+            crate::renderer::draw_rounded_rect(
+                self.frame,
+                thumb_rect.x,
+                thumb_rect.y,
+                thumb_rect.w,
+                thumb_rect.h,
+                components::SCROLLBAR_WIDTH / 2.0,
+                color.alpha(100),
+                self.width,
+                self.height,
+            );
+        }
+
+        // Track da scrollbar
+        let store = self.state.borrow();
+        crate::renderer::draw_rect(
+            self.frame,
+            x as i32,
+            y as i32,
+            components::SCROLLBAR_WIDTH as i32,
+            self.scroll.viewport_height as i32,
+            store.theme.colors.border.alpha(50),
+            self.width,
+            self.height,
+        );
     }
 }
