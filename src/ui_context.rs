@@ -154,6 +154,8 @@ pub struct Ui<'a> {
     pub scroll: ScrollState,
     pub depth: u32,
     pub widget_id_counter: u64,
+    pub max_y_seen: f32,
+    pub max_x_seen: f32,
 }
 
 pub struct StateHandle<T> {
@@ -212,6 +214,8 @@ impl<'a> Ui<'a> {
             scroll: ScrollState::new(),
             depth: 0,
             widget_id_counter: 0,
+            max_y_seen: 0.0,
+            max_x_seen: 0.0,
         }
     }
 
@@ -312,38 +316,84 @@ impl<'a> Ui<'a> {
             return;
         }
 
-        if let Some(thumb_rect) = self.scroll.scrollbar_rect(x, y) {
-            let is_hovered = self.is_hovered_absolute(thumb_rect);
-            let theme = self.theme();
-            let color = if is_hovered || self.scroll.is_dragging {
-                theme.colors.text_secondary
-            } else {
-                theme.colors.text_muted
-            };
-            drop(theme);
-
-            crate::renderer::draw_rounded_rect(
-                self.frame,
-                thumb_rect.x,
-                thumb_rect.y,
-                thumb_rect.w,
-                thumb_rect.h,
-                components::SCROLLBAR_WIDTH / 2.0,
-                color.alpha(100),
-                self.width,
-                self.height,
-            );
-        }
-
+                    if let Some(mut thumb_rect) = self.scroll.scrollbar_rect(x, y) {
+                        let is_hovered_thumb = self.is_hovered_absolute(thumb_rect);
+        
+                        // Handle drag start
+                        if is_hovered_thumb && self.input.mouse_just_clicked {
+                            self.scroll.is_dragging = true;
+                            self.scroll.drag_start_y = self.input.mouse_pos.1;
+                            self.scroll.drag_start_offset = self.scroll.offset;
+                        }
+        
+                        // Handle drag end
+                        if self.scroll.is_dragging && !self.input.mouse_clicked {
+                            self.scroll.is_dragging = false;
+                        }
+        
+                        // Handle dragging movement
+                        if self.scroll.is_dragging {
+                            let mouse_delta_y = self.input.mouse_pos.1 - self.scroll.drag_start_y;
+                            let scroll_range = self.scroll.content_height - self.scroll.viewport_height;
+                            let thumb_travel_range = self.scroll.viewport_height - thumb_rect.h;
+        
+                            // Avoid division by zero and ensure scroll_range is positive for calculation
+                            if thumb_travel_range > 0.0 && scroll_range > 0.0 {
+                                let scroll_ratio = mouse_delta_y / thumb_travel_range;
+                                let new_offset = self.scroll.drag_start_offset + scroll_ratio * scroll_range;
+                                self.scroll.scroll_to(new_offset);
+                            }
+                            // Keep mouse_clicked true during drag to maintain state
+                            // This is a common pattern in IMGUI for dragging, as mouse_clicked is reset each frame.
+                            // However, directly setting it here might interfere with other widgets.
+                            // A better approach is to not clear mouse_clicked at the start of the frame,
+                            // but let the Winit event determine its state correctly.
+                            // The fact that mouse_clicked is false when dragging stops is handled by the "Handle drag end" block.
+                            // So, no need to set it true here.
+                        }
+        
+                        // Update thumb_rect.y if dragging is active to reflect current position
+                        // Recalculate thumb_y based on the new scroll.offset
+                        let thumb_y = if self.scroll.content_height > self.scroll.viewport_height {
+                            let max_thumb_y_offset = self.scroll.viewport_height - thumb_rect.h;
+                            y + (self.scroll.offset / (self.scroll.content_height - self.scroll.viewport_height)) * max_thumb_y_offset
+                        } else {
+                            y
+                        };
+                        thumb_rect.y = thumb_y; // Update thumb_rect's y component
+        
+                        let theme = self.theme();
+                        let color = if is_hovered_thumb || self.scroll.is_dragging {
+                            theme.colors.text_secondary
+                        } else {
+                            theme.colors.text_muted
+                        };
+                        drop(theme);
+        
+                        crate::renderer::draw_rounded_rect(
+                            self.frame,
+                            thumb_rect.x,
+                            thumb_rect.y,
+                            thumb_rect.w,
+                            thumb_rect.h,
+                            components::SCROLLBAR_WIDTH / 2.0,
+                            color.alpha(100),
+                            self.width,
+                            self.height,
+                        );
+                    }
         // Track da scrollbar
         let store = self.state.borrow();
+        let border_color = store.theme.colors.border.alpha(50); // Extract color before store is dropped
+        drop(store); // Explicitly drop the immutable borrow
+
         crate::renderer::draw_rect(
             self.frame,
             x as i32,
             y as i32,
             components::SCROLLBAR_WIDTH as i32,
             self.scroll.viewport_height as i32,
-            store.theme.colors.border.alpha(50),
+            border_color,
             self.width,
             self.height,
         );

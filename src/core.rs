@@ -209,11 +209,7 @@ pub fn run(mut app: impl App + 'static, width: u32, height: u32, font: FontArc) 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
-        // Reset just-pressed states
-        input.mouse_just_clicked = false;
-        input.keys_just_pressed.fill(false);
-        input.char_input = None;
-        input.scroll_delta = 0.0;
+
 
         match event {
             Event::WindowEvent {
@@ -319,6 +315,12 @@ pub fn run(mut app: impl App + 'static, width: u32, height: u32, font: FontArc) 
                     state_store.clone(),
                     &input,
                 );
+
+                // After drawing, reset the "just" states for the *next* frame's input collection.
+                input.mouse_just_clicked = false;
+                input.keys_just_pressed.fill(false);
+                input.char_input = None;
+                input.scroll_delta = 0.0;
 
                 if let Err(err) = pixels.render() {
                     log::error!("Erro ao renderizar frame: {:?}", err);

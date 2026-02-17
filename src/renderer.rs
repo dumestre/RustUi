@@ -159,7 +159,6 @@ pub fn draw_text_smooth(
                 for px in 0..cached.width {
                     let v = cached.data[(py * cached.width + px) as usize];
                     if v > 0.01 {
-                        // Otimização: Pular pixels vazios
                         let final_x = start_x + px as i32;
                         let final_y = start_y + py as i32;
                         if final_x >= 0

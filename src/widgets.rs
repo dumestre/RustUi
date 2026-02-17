@@ -12,7 +12,7 @@ use crate::ui_context::{Ui, AnimatedValue};
 // SCROLL VIEW COM SUPORTE A SCROLL
 // ============================================================================
 
-pub fn scroll_view(ui: &mut Ui, modifier: Modifier, content: impl FnOnce(&mut Ui)) {
+pub fn scroll_view(ui: &mut Ui, modifier: Modifier, content: impl FnOnce(&mut Ui)) -> Rect {
     let widget_id = ui.next_widget_id();
     ui.push_id(widget_id);
 
@@ -20,9 +20,16 @@ pub fn scroll_view(ui: &mut Ui, modifier: Modifier, content: impl FnOnce(&mut Ui
     let container_h = modifier.height.unwrap_or(200.0);
     let container_w = modifier.width.unwrap_or(ui.cursor.w);
 
+    let rect = Rect {
+        x: ui.cursor.x,
+        y: ui.cursor.y,
+        w: container_w,
+        h: container_h,
+    };
+
     // Background
     if let Some(bg) = modifier.background {
-        draw_rounded_rect(
+        crate::renderer::draw_rounded_rect(
             ui.frame,
             ui.cursor.x,
             ui.cursor.y,
@@ -76,12 +83,14 @@ pub fn scroll_view(ui: &mut Ui, modifier: Modifier, content: impl FnOnce(&mut Ui
         scroll: ui.scroll.clone(),
         depth: ui.depth + 1,
         widget_id_counter: ui.widget_id_counter,
+        max_y_seen: ui.cursor.y + padding - ui.scroll.offset, // Initialize max_y_seen for sub_ui
+        max_x_seen: ui.cursor.x + padding, // Initialize max_x_seen for sub_ui
     };
 
     content(&mut sub_ui);
 
     // Atualiza content height
-    let content_h = sub_ui.cursor.y - (ui.cursor.y + padding) + ui.scroll.offset;
+    let content_h = sub_ui.max_y_seen - (ui.cursor.y + padding) + ui.scroll.offset; // Use sub_ui.max_y_seen
     ui.scroll.content_height = content_h;
     ui.scroll.viewport_height = container_h - padding * 2.0;
     ui.widget_id_counter = sub_ui.widget_id_counter;
@@ -95,21 +104,34 @@ pub fn scroll_view(ui: &mut Ui, modifier: Modifier, content: impl FnOnce(&mut Ui
         ui.cursor.y + padding,
     );
 
-    ui.cursor.y += container_h + spacing::SM;
     ui.pop_id();
+    rect
 }
 
 // ============================================================================
 // COLUMN COM LAYOUT FLEXBOX SIMPLES
 // ============================================================================
 
-pub fn column(ui: &mut Ui, modifier: Modifier, content: impl FnOnce(&mut Ui)) {
+pub fn column(ui: &mut Ui, modifier: Modifier, content: impl FnOnce(&mut Ui)) -> Rect {
     let widget_id = ui.next_widget_id();
     ui.push_id(widget_id);
 
     let padding = modifier.padding;
-    let old_h = ui.cursor.h;
     let container_h = modifier.height.unwrap_or(0.0);
+    let container_w = modifier
+        .width
+        .unwrap_or(ui.cursor.w - padding * 2.0)
+        .max(0.0);
+
+    let initial_x = ui.cursor.x;
+    let initial_y = ui.cursor.y;
+
+    let rect_for_parent = Rect { // This is the rect that the column itself occupies in the parent UI
+        x: initial_x,
+        y: initial_y,
+        w: container_w + padding * 2.0,
+        h: container_h, // Placeholder, will be updated after content
+    };
 
     let mut sub_ui = Ui {
         frame: &mut *ui.frame,
@@ -120,57 +142,76 @@ pub fn column(ui: &mut Ui, modifier: Modifier, content: impl FnOnce(&mut Ui)) {
         state: ui.state.clone(),
         input: ui.input,
         cursor: Rect {
-            x: ui.cursor.x + padding,
-            y: ui.cursor.y + padding,
-            w: modifier
-                .width
-                .unwrap_or(ui.cursor.w - padding * 2.0)
-                .max(0.0),
+            x: initial_x + padding,
+            y: initial_y + padding,
+            w: container_w, // Available width for children
             h: 0.0,
         },
         clip_rect: ui.clip_rect.clone(),
         scroll: ui.scroll.clone(),
         depth: ui.depth + 1,
         widget_id_counter: ui.widget_id_counter,
+        max_y_seen: initial_y + padding, // Initialize max_y_seen for sub_ui
+        max_x_seen: initial_x + padding, // Initialize max_x_seen for sub_ui
     };
-
-    if let Some(bg) = modifier.background {
-        draw_rounded_rect(
-            sub_ui.frame,
-            ui.cursor.x,
-            ui.cursor.y,
-            ui.cursor.w,
-            modifier.height.unwrap_or(old_h),
-            0.0,
-            bg,
-            sub_ui.width,
-            sub_ui.height,
-        );
-    }
 
     content(&mut sub_ui);
 
     ui.widget_id_counter = sub_ui.widget_id_counter;
 
-    let final_h = if container_h > 0.0 {
+    let actual_content_height = sub_ui.max_y_seen - (initial_y + padding);
+    let final_h_for_column = if container_h > 0.0 {
         container_h
     } else {
-        sub_ui.cursor.y - (ui.cursor.y + padding)
+        actual_content_height + padding // Account for bottom padding of the column
     };
-    ui.cursor.y += final_h + padding;
+    
+    // Draw background if present, now that we have final_h_for_column
+    if let Some(bg) = modifier.background {
+        crate::renderer::draw_rounded_rect(
+            ui.frame,
+            rect_for_parent.x,
+            rect_for_parent.y,
+            rect_for_parent.w,
+            final_h_for_column,
+            0.0, // Assuming no rounded corners for column background
+            bg,
+            ui.width,
+            ui.height,
+        );
+    }
+
+
+    // Update parent ui's cursor
+    ui.cursor.y = initial_y + final_h_for_column;
+    ui.cursor.x = initial_x; // Reset x for next sibling
+    ui.max_y_seen = ui.max_y_seen.max(ui.cursor.y);
+    ui.max_x_seen = ui.max_x_seen.max(rect_for_parent.x + rect_for_parent.w);
+
+
     ui.pop_id();
+    Rect { x: initial_x, y: initial_y, w: rect_for_parent.w, h: final_h_for_column } // Return actual rect consumed
 }
 
 // ============================================================================
 // ROW PARA LAYOUT HORIZONTAL
 // ============================================================================
 
-pub fn row(ui: &mut Ui, modifier: Modifier, content: impl FnOnce(&mut Ui)) {
+pub fn row(ui: &mut Ui, modifier: Modifier, content: impl FnOnce(&mut Ui)) -> Rect {
     let widget_id = ui.next_widget_id();
     ui.push_id(widget_id);
 
     let padding = modifier.padding;
     let container_h = modifier.height.unwrap_or(0.0);
+    let initial_x = ui.cursor.x;
+    let initial_y = ui.cursor.y;
+
+    let rect_for_parent = Rect { // This is the rect that the row itself occupies in the parent UI
+        x: initial_x,
+        y: initial_y,
+        w: ui.cursor.w, // Row will take parent's width, children will arrange within
+        h: container_h, // Placeholder, will be updated
+    };
 
     let mut sub_ui = Ui {
         frame: &mut *ui.frame,
@@ -181,52 +222,68 @@ pub fn row(ui: &mut Ui, modifier: Modifier, content: impl FnOnce(&mut Ui)) {
         state: ui.state.clone(),
         input: ui.input,
         cursor: Rect {
-            x: ui.cursor.x + padding,
-            y: ui.cursor.y + padding,
-            w: 0.0,
+            x: initial_x + padding,
+            y: initial_y + padding,
+            w: 0.0, // Available width for children is handled by their own modifier or parent width
             h: container_h,
         },
         clip_rect: ui.clip_rect.clone(),
         scroll: ui.scroll.clone(),
         depth: ui.depth + 1,
         widget_id_counter: ui.widget_id_counter,
+        max_y_seen: initial_y + padding, // Initialize max_y_seen for sub_ui
+        max_x_seen: initial_x + padding, // Initialize max_x_seen for sub_ui
     };
-
-    if let Some(bg) = modifier.background {
-        draw_rounded_rect(
-            sub_ui.frame,
-            ui.cursor.x,
-            ui.cursor.y,
-            modifier.width.unwrap_or(ui.cursor.w),
-            container_h,
-            components::CARD_BORDER_RADIUS,
-            bg,
-            sub_ui.width,
-            sub_ui.height,
-        );
-    }
 
     content(&mut sub_ui);
 
     ui.widget_id_counter = sub_ui.widget_id_counter;
 
-    let final_w = sub_ui.cursor.x - (ui.cursor.x + padding);
-    let final_h = if container_h > 0.0 {
+    let actual_content_width = sub_ui.max_x_seen - (initial_x + padding);
+    let actual_content_height = sub_ui.max_y_seen - (initial_y + padding);
+
+    let final_w_for_row = if modifier.width.is_some() {
+        modifier.width.unwrap()
+    } else {
+        actual_content_width + padding // Account for right padding
+    };
+    
+    let final_h_for_row = if container_h > 0.0 {
         container_h
     } else {
-        sub_ui.cursor.h
+        actual_content_height + padding // Account for bottom padding
     };
 
-    ui.cursor.x += final_w + padding;
-    ui.cursor.h = final_h.max(ui.cursor.h);
+    // Draw background if present, now that we have final_w_for_row and final_h_for_row
+    if let Some(bg) = modifier.background {
+        crate::renderer::draw_rounded_rect(
+            ui.frame,
+            rect_for_parent.x,
+            rect_for_parent.y,
+            final_w_for_row,
+            final_h_for_row,
+            components::CARD_BORDER_RADIUS, // Assuming rows can have rounded corners too
+            bg,
+            ui.width,
+            ui.height,
+        );
+    }
+
+    // Update parent ui's cursor
+    ui.cursor.y = initial_y + final_h_for_row; // Row consumes vertical space in parent
+    ui.cursor.x = initial_x; // Reset x for next sibling
+    ui.max_y_seen = ui.max_y_seen.max(ui.cursor.y);
+    ui.max_x_seen = ui.max_x_seen.max(initial_x + final_w_for_row);
+
     ui.pop_id();
+    Rect { x: initial_x, y: initial_y, w: final_w_for_row, h: final_h_for_row } // Return actual rect consumed
 }
 
 // ============================================================================
 // BUTTON COM ANIMAÇÃO
 // ============================================================================
 
-pub fn button(ui: &mut Ui, modifier: Modifier, label: &str) -> bool {
+pub fn button(ui: &mut Ui, modifier: Modifier, label: &str) -> (bool, Rect) {
     let widget_id = ui.next_widget_id();
     ui.push_id(widget_id);
 
@@ -311,17 +368,16 @@ pub fn button(ui: &mut Ui, modifier: Modifier, label: &str) -> bool {
         );
     }
 
-    ui.cursor.y += h + spacing::SM;
     ui.pop_id();
 
-    clicked
+    (clicked, rect)
 }
 
 // ============================================================================
 // TEXT INPUT COM SUPORTE A TECLADO
 // ============================================================================
 
-pub fn text_input(ui: &mut Ui, modifier: Modifier, placeholder: &str) -> String {
+pub fn text_input(ui: &mut Ui, modifier: Modifier, placeholder: &str) -> (String, Rect) {
     let widget_id = ui.next_widget_id();
     ui.push_id(widget_id);
 
@@ -453,101 +509,196 @@ pub fn text_input(ui: &mut Ui, modifier: Modifier, placeholder: &str) -> String 
         }
     }
 
-    ui.cursor.y += h + spacing::SM;
     ui.pop_id();
 
-    text
+    (text, rect)
 }
 
 // ============================================================================
 // SIDEBAR ITEM
 // ============================================================================
 
-pub fn sidebar_item(ui: &mut Ui, label: &str, active: bool) -> bool {
+pub fn sidebar_item(ui: &mut Ui, label: &str, active: bool) -> (bool, Rect) {
+
     let widget_id = ui.next_widget_id();
+
     ui.push_id(widget_id);
 
+
+
     let h = components::SIDEBAR_ITEM_HEIGHT;
+
     let rect = Rect {
+
         x: ui.cursor.x,
+
         y: ui.cursor.y,
+
         w: ui.cursor.w,
+
         h,
+
     };
+
+
 
     // Hover com animação
+
     let hover_state = ui.use_state_with_id(widget_id, || AnimatedValue::new(0.0));
+
     let hovered = ui.is_hovered(rect);
 
+
+
     // Atualiza animação hover
+
     {
+
         let mut anim = hover_state.get();
+
         if hovered {
+
             anim.set(1.0, render::ANIMATION_DURATION_MS);
+
         } else {
+
             anim.set(0.0, render::ANIMATION_DURATION_MS);
+
         }
+
         hover_state.set(anim);
+
     }
 
+
+
     let hover_t = hover_state.get().update();
+
     let clicked = hovered && ui.input.mouse_just_clicked;
 
+
+
     // Interpola background
+
     let base_alpha = if active { 60 } else { 0 };
+
     let hover_alpha = 20;
+
     let alpha = (base_alpha as f32 + (hover_alpha as f32 - base_alpha as f32) * hover_t) as u8;
 
+
+
     let bg_color = if active {
+
         ui.theme().colors.primary.alpha(60)
+
     } else if hovered {
+
         ui.theme().colors.surface_hover
+
     } else {
+
         ui.theme().colors.background
+
     };
+
+
 
     let text_color = if active {
+
         ui.theme().colors.text_primary
+
     } else if hovered {
+
         ui.theme().colors.text_secondary
+
     } else {
+
         ui.theme().colors.text_secondary.alpha(text_alpha::SECONDARY)
+
     };
 
-    draw_rounded_rect(
-        ui.frame,
-        ui.cursor.x,
-        ui.cursor.y,
-        ui.cursor.w,
-        h,
-        components::SIDEBAR_ITEM_BORDER_RADIUS,
-        bg_color.alpha(alpha.max(base_alpha)),
-        ui.width,
-        ui.height,
-    );
-    draw_text_smooth(
-        ui.frame,
-        ui.atlas,
-        ui.font,
-        font_size::MD,
-        ui.cursor.x + spacing::MD,
-        ui.cursor.y + 12.0,
-        label,
-        text_color,
-        ui.width,
-        ui.height,
-    );
-    ui.cursor.y += h + spacing::SM;
+
+
+            draw_rounded_rect(
+
+
+
+                ui.frame,
+
+
+
+                ui.cursor.x,
+
+
+
+                ui.cursor.y,
+
+
+
+                ui.cursor.w,
+
+
+
+                h,
+
+
+
+                components::SIDEBAR_ITEM_BORDER_RADIUS,
+
+
+
+                bg_color.alpha(alpha.max(base_alpha)),
+
+
+
+                ui.width,
+
+
+
+                ui.height,
+
+
+
+            );
+
+            draw_text_smooth(
+
+                ui.frame,
+
+                ui.atlas,
+
+                ui.font,
+
+                font_size::MD,
+
+                ui.cursor.x + spacing::MD,
+
+                ui.cursor.y + 12.0,
+
+                label,
+
+                text_color,
+
+                ui.width,
+
+                ui.height,
+
+            );
+
+
 
     ui.pop_id();
-    clicked
+
+    (clicked, rect)
+
 }
 
 // ============================================================================
 // STAT CARD
 // ============================================================================
 
-pub fn stat_card(ui: &mut Ui, label: &str, value: &str, color: Color) {
+pub fn stat_card(ui: &mut Ui, label: &str, value: &str, color: Color) -> Rect {
     let widget_id = ui.next_widget_id();
     ui.push_id(widget_id);
 
@@ -641,15 +792,15 @@ pub fn stat_card(ui: &mut Ui, label: &str, value: &str, color: Color) {
         ui.height,
     );
 
-    ui.cursor.y += h + spacing::MD;
     ui.pop_id();
+    rect
 }
 
 // ============================================================================
 // CARD
 // ============================================================================
 
-pub fn card(ui: &mut Ui, modifier: Modifier, content: impl FnOnce(&mut Ui)) {
+pub fn card(ui: &mut Ui, modifier: Modifier, content: impl FnOnce(&mut Ui)) -> Rect {
     let widget_id = ui.next_widget_id();
     ui.push_id(widget_id);
 
@@ -658,6 +809,13 @@ pub fn card(ui: &mut Ui, modifier: Modifier, content: impl FnOnce(&mut Ui)) {
         .unwrap_or(ui.theme().colors.surface.alpha(240));
     let w = modifier.width.unwrap_or(ui.cursor.w);
     let h = modifier.height.unwrap_or(80.0);
+
+    let rect = Rect { // Define rect here
+        x: ui.cursor.x,
+        y: ui.cursor.y,
+        w,
+        h,
+    };
 
     draw_shadow(
         ui.frame,
@@ -700,23 +858,32 @@ pub fn card(ui: &mut Ui, modifier: Modifier, content: impl FnOnce(&mut Ui)) {
         scroll: ui.scroll.clone(),
         depth: ui.depth + 1,
         widget_id_counter: ui.widget_id_counter,
+        max_y_seen: ui.cursor.y + components::CARD_PADDING, // Initialize max_y_seen for sub_ui
+        max_x_seen: ui.cursor.x + components::CARD_PADDING, // Initialize max_x_seen for sub_ui
     };
 
     content(&mut sub_ui);
 
-    ui.widget_id_counter = sub_ui.widget_id_counter;
-    ui.cursor.y += h + spacing::LG;
+    ui.widget_id_counter = sub_ui.widget_id_counter; // This line was missing before!
     ui.pop_id();
+
+    rect // Return rect
 }
 
 // ============================================================================
 // TEXT
 // ============================================================================
 
-pub fn text(ui: &mut Ui, content: &str) {
+pub fn text(ui: &mut Ui, content: &str) -> Rect {
     let theme = ui.theme();
     let color = theme.colors.text_primary;
     drop(theme);
+    let rect = Rect {
+        x: ui.cursor.x,
+        y: ui.cursor.y,
+        w: content.len() as f32 * font_size::LG * 0.5, // Approximate width
+        h: font_size::LG + spacing::SM, // Approximate height
+    };
     draw_text_smooth(
         ui.frame,
         ui.atlas,
@@ -729,13 +896,19 @@ pub fn text(ui: &mut Ui, content: &str) {
         ui.width,
         ui.height,
     );
-    ui.cursor.y += font_size::LG + spacing::SM;
+    rect
 }
 
-pub fn text_muted(ui: &mut Ui, content: &str) {
+pub fn text_muted(ui: &mut Ui, content: &str) -> Rect {
     let theme = ui.theme();
     let color = theme.colors.text_secondary;
     drop(theme);
+    let rect = Rect {
+        x: ui.cursor.x,
+        y: ui.cursor.y,
+        w: content.len() as f32 * font_size::MD * 0.5, // Approximate width
+        h: font_size::MD + spacing::SM, // Approximate height
+    };
     draw_text_smooth(
         ui.frame,
         ui.atlas,
@@ -748,13 +921,19 @@ pub fn text_muted(ui: &mut Ui, content: &str) {
         ui.width,
         ui.height,
     );
-    ui.cursor.y += font_size::MD + spacing::SM;
+    rect
 }
 
-pub fn text_heading(ui: &mut Ui, content: &str) {
+pub fn text_heading(ui: &mut Ui, content: &str) -> Rect {
     let theme = ui.theme();
     let color = theme.colors.text_primary;
     drop(theme);
+    let rect = Rect {
+        x: ui.cursor.x,
+        y: ui.cursor.y,
+        w: content.len() as f32 * font_size::XL * 0.5, // Approximate width
+        h: font_size::XL + spacing::MD, // Approximate height
+    };
     draw_text_smooth(
         ui.frame,
         ui.atlas,
@@ -767,38 +946,54 @@ pub fn text_heading(ui: &mut Ui, content: &str) {
         ui.width,
         ui.height,
     );
-    ui.cursor.y += font_size::XL + spacing::MD;
+    rect
 }
 
 // ============================================================================
 // DIVIDER
 // ============================================================================
 
-pub fn divider(ui: &mut Ui) {
+pub fn divider(ui: &mut Ui) -> Rect {
     let theme = ui.theme();
     let color = theme.colors.border.alpha(50);
     drop(theme);
+    let rect = Rect {
+        x: ui.cursor.x,
+        y: ui.cursor.y,
+        w: ui.cursor.w,
+        h: components::DIVIDER_HEIGHT,
+    };
     crate::renderer::draw_rect(
         ui.frame,
-        ui.cursor.x as i32,
-        ui.cursor.y as i32,
-        ui.cursor.w as i32,
-        components::DIVIDER_HEIGHT as i32,
+        rect.x as i32,
+        rect.y as i32,
+        rect.w as i32,
+        rect.h as i32,
         color,
         ui.width,
         ui.height,
     );
-    ui.cursor.y += components::DIVIDER_MARGIN_Y;
+    rect
 }
 
 // ============================================================================
 // SPACER
 // ============================================================================
 
-pub fn spacer(ui: &mut Ui, height: f32) {
-    ui.cursor.y += height;
+pub fn spacer(ui: &mut Ui, height: f32) -> Rect {
+    Rect {
+        x: ui.cursor.x,
+        y: ui.cursor.y,
+        w: ui.cursor.w, // Full available width
+        h: height,
+    }
 }
 
-pub fn hspacer(ui: &mut Ui, width: f32) {
-    ui.cursor.x += width;
+pub fn hspacer(ui: &mut Ui, width: f32) -> Rect {
+    Rect {
+        x: ui.cursor.x,
+        y: ui.cursor.y,
+        w: width,
+        h: ui.cursor.h, // Full available height
+    }
 }
