@@ -1,5 +1,5 @@
 use ab_glyph::FontArc;
-use rustui::config::Theme;
+use rustui::config::{components, Theme, spacing};
 use rustui::core::{App, InputState, StateStore, run};
 use rustui::renderer::{FontAtlas, clear};
 use rustui::widgets::{
@@ -7,6 +7,7 @@ use rustui::widgets::{
     text_heading, text_input, text_muted,
 };
 use rustui::{bg, pad, sz, Ui};
+use num_format::{Locale, ToFormattedString};
 use std::cell::RefCell;
 
 use std::rc::Rc;
@@ -107,14 +108,22 @@ impl App for MyApp {
                 spacer(ui, 30.0);
 
                 // Stats cards em row
-                row(ui, pad(0.0), |ui| {
-                    let rev_str = format!("$ {}K", revenue_val / 1000);
-                    stat_card(ui, "TOTAL REVENUE", &rev_str, self.theme.colors.success);
-                    hspacer(ui, 20.0);
-                    stat_card(ui, "ACTIVE USERS", &format!("{}", users.get()), self.theme.colors.primary);
-                    hspacer(ui, 20.0);
-                    stat_card(ui, "CONVERSION", "12.5%", self.theme.colors.error);
-                });
+                let original_cursor_x = ui.cursor.x;
+                let original_cursor_y = ui.cursor.y;
+
+                let rev_str = format!("$ {}K", (revenue_val / 1000).to_formatted_string(&Locale::en));
+                stat_card(ui, "TOTAL REVENUE", &rev_str, self.theme.colors.success);
+                ui.cursor.x = original_cursor_x + components::STAT_CARD_WIDTH + spacing::LG;
+                ui.cursor.y = original_cursor_y;
+
+                stat_card(ui, "ACTIVE USERS", &users.get().to_formatted_string(&Locale::en), self.theme.colors.primary);
+                ui.cursor.x = original_cursor_x + (components::STAT_CARD_WIDTH * 2.0) + (spacing::LG * 2.0);
+                ui.cursor.y = original_cursor_y;
+
+                stat_card(ui, "CONVERSION", "12.5%", self.theme.colors.error);
+                // Reset ui.cursor.x for subsequent vertical elements.
+                ui.cursor.x = original_cursor_x;
+                ui.cursor.y = original_cursor_y + components::STAT_CARD_HEIGHT + spacing::MD;
 
                 spacer(ui, 40.0);
 
